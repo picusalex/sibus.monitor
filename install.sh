@@ -2,15 +2,10 @@
 
 echo "Installing in bus.monitor"
 
-sudo apt-get update
-
-sudo apt-get install python python-dev
-easy_install pip
-
-sudo echo "export ALPIBUS_DIR=\"/home/linuxlite/PycharmProjects/car.dashboard\"" >> /etc/environment
-
 sudo apt-get install mysql-server libmysqlclient-dev
-sudo pip install sqlalchemy MySQL-python python-dateutil
+
+pip install zmq PyYaml marshmallow sqlalchemy MySQL-python python-dateutil
+
 mysql -u root -p -e "create database car_dashboard";
 
 for SERVICE in `ls service_*`
