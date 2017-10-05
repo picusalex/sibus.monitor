@@ -1,20 +1,42 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-echo "Installing in bus.monitor"
+SERVICE="sibus.monitor"
 
-sudo apt-get install mysql-server libmysqlclient-dev
+INSTALL_DIR=`pwd`
+SERVICE_PATH="$INSTALL_DIR/sibus.monitor.py"
+SYSTEMD_SERVICE="$SERVICE.service"
+SYSTEMD_ORG="$INSTALL_DIR/systemd-config"
+SYSTEMD_TMP="$INSTALL_DIR/$SYSTEMD_SERVICE"
+SYSTEMD_DST="/lib/systemd/system/$SYSTEMD_SERVICE"
 
-pip install zmq PyYaml marshmallow sqlalchemy MySQL-python python-dateutil
+echo " # Update folder from git repository"
+git fetch origin master
+git reset --hard origin/master
 
-mysql -u root -p -e "create database car_dashboard";
+if [ ! -e $SERVICE_PATH ]; then
+    echo " !!! ERROR: file $SERVICE_PATH not found !!!"
+    echo " (script must be run from its own directory !)"
+    exit 1
+fi
+sudo chmod +x $SERVICE_PATH
 
-for SERVICE in `ls service_*`
-do
-    echo "Installing service $SERVICE"
-    chmod 0755 $SERVICE
-    if [ -e "/etc/init.d/$SERVICE" ]; then
-        sudo unlink /etc/init.d/$SERVICE
-    fi
-    sudo ln -s $INSTALL_DIR/$SERVICE /etc/init.d/$SERVICE
-done
+sudo pip install --upgrade sibus_lib
 
+echo " # Patching service $SERVICE systemd config file..."
+sed 's|<SCRIPT_PATH>|'$SERVICE_PATH'|g' $SYSTEMD_ORG > "/tmp/tmp.systemd"
+sed 's|<SCRIPT_DIR>|'$INSTALL_DIR'|g' "/tmp/tmp.systemd" > "/tmp/tmp2.systemd"
+sed 's|<USER>|'$USER'|g' "/tmp/tmp2.systemd" > $SYSTEMD_TMP
+echo " = systemd config: "
+cat $SYSTEMD_TMP
+
+echo " # Installing service $SERVICE"
+sudo cp -fv $SYSTEMD_TMP $SYSTEMD_DST
+sudo systemctl daemon-reload
+
+echo " # Enable & start service $SERVICE at boot"
+sudo systemctl enable $SYSTEMD_SERVICE
+sudo systemctl start $SYSTEMD_SERVICE
+
+echo " # Service $SERVICE status"
+sudo systemctl status $SYSTEMD_SERVICE
+exit 0

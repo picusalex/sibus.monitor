@@ -5,97 +5,58 @@ import signal
 import sys
 import time
 
-from sqlalchemy import Column, Integer, String, Float, desc, or_
-
-from sibus_lib import BusElement, MessageObject
-from sibus_lib import CoreDBBase, CoreDatabase
-from sibus_lib import mylogger
-from sibus_lib.utils import float_to_datetime, datetime_now_float
+from sibus_lib import BusElement, MessageObject, sibus_init
+from sibus_lib.utils import datetime_now_float
 
 SERVICE_NAME = "bus.monitor"
-logger = mylogger(SERVICE_NAME)
+logger, cfg_data = sibus_init(SERVICE_NAME)
 
-class BusElementDB(CoreDBBase):
-    __tablename__ = 'current_bus_elements'
-    id = Column(Integer, primary_key=True)
-    bus_uid = Column(String(36))
-    bus_origin_host = Column(String(50))
-    bus_origin_service = Column(String(50))
-    status = Column(String(20))
-    first_event_date = Column(Float(precision=32))
-    last_event_date = Column(Float(precision=32))
-
-database = CoreDatabase()
+BUS_ELEMENTS = {}
 
 def check_dead():
-    session = database.get_session()
-    for bus_elem in session.query(BusElementDB).order_by(desc(BusElementDB.last_event_date)):
+    for host_name in BUS_ELEMENTS:
+        host = BUS_ELEMENTS[host_name]
+        for service_name in host:
+            service = host[service_name]
+            if datetime_now_float() - service["last_communication"] > 60:
+                BUS_ELEMENTS[host_name][service_name]["status"] = "zombie"
 
-        dtmp = datetime_now_float()
-        if (dtmp - bus_elem.last_event_date > 60) and (bus_elem.status <> "dead") and (bus_elem.status <> "terminated"):
-            bus_elem.status = "dead"
-            session.add(bus_elem)
-        elif (dtmp - bus_elem.last_event_date > 60*5) and (bus_elem.status <> "terminated"):
-            bus_elem.status = "terminated"
-            session.add(bus_elem)
-
-    session.commit()
-
-def publish_status():
-    session = database.get_session()
-
-    check_dead()
-
-    status = {
-        "elements_alive" : 0,
-        "elements_list" : []
-    }
-    for bus_elem in session.query(BusElementDB).filter(or_(BusElementDB.status == 'alive', BusElementDB.status == 'dead')).order_by(desc(BusElementDB.last_event_date)):
-
-        tmp = {
-            "bus_origin_host": bus_elem.bus_origin_host,
-            "bus_origin_service": bus_elem.bus_origin_service,
-            "status": bus_elem.status,
-            "started_since": float_to_datetime(bus_elem.first_event_date).isoformat(),
-            "last_event": float_to_datetime(bus_elem.last_event_date).isoformat()
-        }
-        status["elements_list"].append(tmp)
-        if bus_elem.status == "alive":
-            status["elements_alive"] += 1
-
-    message = MessageObject(data=status, topic="admin.bus.status")
-    logger.info("Bus Monitoring status: %s" % str(message.get_data()))
-    monitor_busclient.publish(message)
+            if datetime_now_float() - service["last_communication"] > 300:
+                del BUS_ELEMENTS[host_name][service_name]
 
 
 def on_busmessage(message):
-    session = database.get_session()
+    host = message.origin_host
+    service = message.origin_service
+    topic = message.topic
 
-    bus_elem = session.query(BusElementDB).filter_by(bus_uid=message.origin_uid).one_or_none()
+    if host not in BUS_ELEMENTS:
+        BUS_ELEMENTS[host] = {}
 
-    if bus_elem is None:
-        bus_elem = BusElementDB(bus_uid=message.origin_uid,
-                                bus_origin_host=message.origin_host,
-                                bus_origin_service=message.origin_service,
-                                status="alive",
-                                first_event_date=message.date_creation,
-                                last_event_date=message.date_creation)
-    bus_elem = None
+    if service not in BUS_ELEMENTS[host]:
+        BUS_ELEMENTS[host][service] = {
+            "last_communication": None,
+            "topic": None,
+            "status": None
+        }
 
-    if message.topic == "admin.terminated":
-        bus_elem.status = "terminated"
-    else:
-        bus_elem.status = "alive"
-    bus_elem.last_event_date = message.date_creation
+    BUS_ELEMENTS[host][service]["last_communication"] = datetime_now_float()
+    BUS_ELEMENTS[host][service]["topic"] = topic
+    BUS_ELEMENTS[host][service]["status"] = "alive"
 
-    session.add(bus_elem)
-    session.commit()
+    check_dead();
 
-    if message.topic == "admin.start" or message.topic == "admin.terminated":
+    if topic == "admin.terminated":
+        del BUS_ELEMENTS[host][service]
+
+    if topic == "admin.request.bus.elements":
         publish_status()
-    elif message.topic == "request.bus.status":
-        publish_status()
 
+    return
+
+def publish_status():
+    message = MessageObject(data=BUS_ELEMENTS, topic="admin.info.bus.elements")
+    monitor_busclient.publish(message)
 
 monitor_busclient = BusElement(SERVICE_NAME, callback=on_busmessage, ignore_my_msg=False)
 monitor_busclient.register_topic("*")
